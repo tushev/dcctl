@@ -14,6 +14,11 @@ A handy tool that simplifies management of `docker-compose` applications on Linu
 - Service is "started" by `docker-compose up -d --build` command
 - Service is "stopped" by `docker-compose stop && docker-compose rm -f` command
 
+## Installation
+```sh
+curl -o /usr/local/bin/dcctl https://raw.githubusercontent.com/tushev/dcctl/main/dcctl && chmod +x /usr/local/bin/dcctl
+```
+
 ## Usage
 
 - `dcctl start` Starts service defined by `docker-compose.yml` in current directory
