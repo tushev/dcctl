@@ -1,0 +1,411 @@
+#!/usr/bin/env bash
+
+file_editor="mcedit"
+docker_ps_format="table {{.Names}}\t{{.Status}}\t{{.Size}}\t{{.Image}}\t{{.ID}}"
+default_service="."
+docker_compose_dir="docker"
+
+skip_nonexisting_user_to_current_dir=0
+do_not_ask_for_confirmation=0
+
+initial_directory="$PWD"
+initial_commandline="$@"
+
+set -Eeuo pipefail
+trap cleanup SIGINT SIGTERM ERR EXIT
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd -P)
+
+usage() {
+  cat <<EOF
+Usage: $(basename "${BASH_SOURCE[0]}") [-h] [-d subdir] [-x] [-y] command [service_name] [extra_args]
+
+Simplifies management for docker-compose services.
+Key feature: automatic discovery of docker-compose.ya?ml directory from SERVICE_NAME.
+
+Available options:
+
+-h, --help      		Print this help and exit
+-y				Don't ask for confirmation
+-x, --allow-nonexisting		Use . in case \$user/\$subdir or \$path does not contain docker-compose
+-d subdir, --subdir subdir	Specify user's subdir for docker-compose (default: docker)
+
+command [extra_args]:
+	start			Start SERVICE_NAME			(docker-compose up -d --build)
+	stop			Stop SERVICE_NAME			(docker-compose stop && docker-compose rm -f)
+	restart			Restart SERVICE_NAME
+	status			Show status for SERVICE_NAME		(docker-compose ps)
+	logs			Show logs for SERVICE_NAME		(docker-compose logs --tail=100)
+	down			Stop and remove	SERVICE_NAME		(docker-compose down)
+	enter  CONTAINER	Start the specified container		(docker-compose run --rm CONTAINER)
+	sh     CONTAINER	Start sh in container			(docker-compose run --rm CONTAINER sh)
+	bash   CONTAINER	Start bash in container			(docker-compose run --rm CONTAINER bash)
+	update CONTAINERs	Build CONTAINERs, pull others, up -d	[see examples]
+	env			Show .env file for the service		(cat .env)
+	env edit		Edit .env file for the service		(EDITOR .env)
+	mysql
+	prune [args]		Remove unused images, containers etc.	(docker system prune [args])
+	list			List all running containers		(docker ps --format "\$docker_ps_format" ... [see examples] )
+
+Examples (and their actions):
+	- $(basename "${BASH_SOURCE[0]}") start wordpress
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run: docker-compose up -d --build
+	- $(basename "${BASH_SOURCE[0]}") stop wordpress
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run: docker-compose stop && docker-compose rm -f
+	- $(basename "${BASH_SOURCE[0]}") logs wordpress
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run: docker-compose logs --tail=100
+		
+	- $(basename "${BASH_SOURCE[0]}") -d web/wp-dc start wordpress
+		=> find wordpress (most likely in /home/wordpress/web/wp-dc), cd there, run: docker-compose up -d --build
+	- $(basename "${BASH_SOURCE[0]}") start /data/docker.d/wordpress/docker-compose
+		=> cd /data/docker.d/wordpress/docker-compose, run: docker-compose up -d --build
+		
+	- $(basename "${BASH_SOURCE[0]}") enter wordpress php-fpm
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run: docker-compose run --rm php-fpm		
+	- $(basename "${BASH_SOURCE[0]}") bash wordpress php-fpm
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run: docker-compose run --rm php-fpm bash
+		
+	- $(basename "${BASH_SOURCE[0]}") update wordpress
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run: 
+			docker-compose pull
+			docker-compose up -d
+	- $(basename "${BASH_SOURCE[0]}") update wordpress apache-custom redis-custom
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run:
+			docker-compose build --no-cache --pull apache-custom
+			docker-compose build --no-cache --pull redis-custom
+			docker-compose pull
+			docker-compose up -d
+		
+	- $(basename "${BASH_SOURCE[0]}") env wordpress
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run: cat .env
+	- $(basename "${BASH_SOURCE[0]}") env wordpress edit
+		=> find wordpress (most likely in /home/wordpress/docker), cd there, run: mcedit** .env
+		(**: as specified in 'file_editor' variable in ${BASH_SOURCE[0]})
+		
+	- $(basename "${BASH_SOURCE[0]}") prune
+		=> run: docker system prune
+	- $(basename "${BASH_SOURCE[0]}") prune --volumes
+		=> run: docker system prune --volumes
+	- $(basename "${BASH_SOURCE[0]}") list
+		=> run: docker ps --format "docker_ps_format**" | (read -r; printf "%s\n" "\$REPLY"; sort -k 1 )
+		(**: as specified in 'docker_ps_format' variable in ${BASH_SOURCE[0]})
+EOF
+  exit
+}
+
+cleanup() {
+  trap - SIGINT SIGTERM ERR EXIT
+  # script cleanup here
+  cd "${initial_directory}"
+}
+
+setup_colors() {
+  if [[ -t 2 ]] && [[ -z "${NO_COLOR-}" ]] && [[ "${TERM-}" != "dumb" ]]; then
+    NOFORMAT='\033[0m' RED='\033[0;31m' GREEN='\033[0;32m' ORANGE='\033[0;33m' BLUE='\033[0;34m' PURPLE='\033[0;35m' CYAN='\033[0;36m' YELLOW='\033[1;33m'
+  else
+    NOFORMAT='' RED='' GREEN='' ORANGE='' BLUE='' PURPLE='' CYAN='' YELLOW=''
+  fi
+}
+
+msg() {
+  echo >&2 -e "${1-}"
+}
+
+die() {
+  local msg=$1
+  local code=${2-1} # default exit status 1
+  msg "$msg"
+  exit "$code"
+}
+
+confirm_action() {
+	msg "$1"	
+	if [ "$do_not_ask_for_confirmation" -eq "0" ]; then
+		read -p "Please confirm this. Continue? (y/N)" -n 1 -r
+		echo    # (optional) move to a new line
+		if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+			die "Cancelled by user"
+		fi
+	fi
+}
+
+compose_file_exists() {
+  [ -e "$1/docker-compose.yml" ] || [ -e "$1/docker-compose.yaml" ] && return
+  false
+}
+
+get_service_real_name() {
+
+	# try loading .env first
+	if [ -f "$1/.env" ]; then
+		# https://stackoverflow.com/a/66118031 - modified, without `-e "s/=\(.*\)/='\1'/g"`
+		# `-n` flag hides these variables from any processes started in this file
+		export -n $(cat "$1/.env" | sed -e '/^#/d;/^\s*$/d' -e "s/'/'\\\''/g" -e "s/\t//g" | tr -d ' ' | xargs -d '\n')
+		if [ -n ${COMPOSE_PROJECT_NAME} ]; then
+			echo "${COMPOSE_PROJECT_NAME}"
+			return
+		fi
+	fi
+	
+	# get parent directory
+	if [[ $1 == "." ]]; then
+	  dc_dir="$PWD"
+    else
+	   dc_dir="$1"
+	fi
+	parent_dir=${dc_dir%"$docker_compose_dir"}
+	suggested_name=$(basename "$parent_dir")
+	echo "${suggested_name}"
+}
+
+check_service_exists() {
+
+  if [[ $1 == "." ]]; then
+    service_dir="."
+  else
+	# TODO: Add extra logic here - some kind of alias registry
+    if getent passwd $1 > /dev/null 2>&1; then
+  	  homedir=$( getent passwd $1 | cut -d: -f6 )
+	  service_dir="${homedir}/${docker_compose_dir}"
+	else
+	  # if $1 is a path
+	  if [[ -d $1 ]]; then 
+		if compose_file_exists "$1"; then
+			service_dir="$1"
+		else
+			service_dir="$1/${docker_compose_dir}"
+		fi
+	  fi # /$1 is path
+    fi # /getent
+  fi
+  
+  if compose_file_exists "${service_dir}"; then
+    # TODO: Add get_service_name
+	service_real_name=$(get_service_real_name "${service_dir}")
+    msg "${YELLOW}${command} ${GREEN}[ ${service_real_name} ]${NOFORMAT}: ${service_dir}"
+    return
+  fi
+  
+  die "${RED}Cannot find service:${NOFORMAT} $1"
+}
+
+is_service_name() {
+  
+  if [[ $# -eq 0 ]] || [[ $1 == -* ]]; then return -1; fi
+  
+  # TODO: Add extra logic here - some kind of alias registry
+  
+  # if $1 is a user name
+  if getent passwd $1 > /dev/null 2>&1; then
+    homedir=$( getent passwd $1 | cut -d: -f6 )
+	# echo "Yes, the user exists: ${homedir}"
+	service_dir="${homedir}/${docker_compose_dir}"
+	if compose_file_exists "${service_dir}"; then
+		# echo "And yes, the service exists"
+		return
+	else
+		if [ "$skip_nonexisting_user_to_current_dir" -eq "0" ]; then
+			msg "${RED}ERROR${NOFORMAT}: User ${GREEN}$1${NOFORMAT} exists, but there's no ${ORANGE}${service_dir}/docker-compose.ya?ml${NOFORMAT}"
+			die "Exiting. Use -x flag to override this check and use . instead"
+		fi
+	fi
+  # else
+    # echo "No, the user does not exist"
+  fi
+    
+  # if $1 is a path
+  if [[ -d $1 ]]; then 
+	if compose_file_exists "$1"; then
+		# echo "It's a path and it contains docker-compose.ya?ml"
+		confirm_action "Treating ${ORANGE}$1 ${NOFORMAT}as ${GREEN}path to docker-compose service${NOFORMAT}"
+		return
+	else
+		service_dir="$1/${docker_compose_dir}"
+		if compose_file_exists "${service_dir}"; then
+			# echo "It's a path and it contains ${docker_compose_dir}/docker-compose.ya?ml"
+			confirm_action "Treating ${ORANGE}$1/${docker_compose_dir} ${NOFORMAT}as ${GREEN}path to docker-compose service${NOFORMAT}"
+			return
+		fi
+	fi
+	# $1 is a path, but it does not contain docker-compose => we treat it as a param
+	confirm_action "Treating ${ORANGE}$1 ${NOFORMAT}as ${YELLOW}usual argument${NOFORMAT} (not path to service)"
+  fi
+  
+  false
+}
+
+parse_params() {
+  # default values of variables set from params
+  # flag=0
+  # param=''
+  command=''
+  service_name=''
+  extra_params=''
+
+
+  while :; do
+    case "${1-}" in
+    --no-color) NO_COLOR=1 ;;
+    -h | --help) usage ;;
+    # -v | --verbose) set -x ;;
+    # -f | --flag) flag=1 ;; # example flag
+    -x | --allow-nonexisting) skip_nonexisting_user_to_current_dir=1 ;;
+    -y) do_not_ask_for_confirmation=1 ;;
+    # -p | --param) # example named parameter
+      # param="${2-}"
+      # shift
+      # ;;
+    -d | --subdir)
+      docker_compose_dir="${2-}"
+      shift
+      ;;
+    -?*) die "Unknown option: $1" ;;
+    *) break ;;
+    esac
+    shift
+  done
+
+  args=("$@")
+  setup_colors
+  
+  # check required params and arguments
+  # [[ -z "${param-}" ]] && die "Missing required parameter: param"
+  [[ ${#args[@]} -eq 0 ]] && die "Missing script arguments. Use -h for help."
+  
+  command=${args[0]-}
+  [[ -z "${command-}" ]] && die "Missing command" # Unlikely to happen, but better check nevertheless
+  
+  # echo "n=$#"
+
+  # we do not need params for service-independent commands
+  if [ "${command}" == "prune" ]; then  
+	extra_params="${@:2}"
+  else
+	if [ "${command}" != "list" ]; then  
+	  first_param="${args[1]-}"
+	  
+	  if is_service_name $first_param; then
+		service_name="${first_param-}"
+		extra_params="${@:3}"
+	  else
+		service_name="${default_service-}"
+		extra_params="${@:2}"
+	  fi	  
+	fi
+  fi
+
+  return 0
+}
+
+parse_params "$@"
+
+# script logic here
+
+# msg "${RED}Read parameters:${NOFORMAT}"
+# # msg "- flag: ${flag}"
+# # msg "- param: ${param}"
+# msg "- all_args: ${args[*]-}"
+# msg "- command: ${command}"
+# msg "- service_name: ${service_name}"
+# msg "- extra_params: ${extra_params}"
+
+
+# process service-independent commands
+if [ "${command}" = "list" ]; then
+    docker ps --format "${docker_ps_format}" | (read -r; printf "%s\n" "$REPLY"; sort -k 1 )
+	exit
+fi
+if [ "${command}" = "prune" ]; then
+    docker system prune ${extra_params}
+	exit
+fi
+
+# process service-dependent commands
+check_service_exists "${service_name}"
+cd "${service_dir}"
+
+case ${command} in
+
+  start)
+    docker-compose up -d --build ${extra_params}
+    ;;
+
+  stop)
+    docker-compose stop && docker-compose rm -f
+    ;;
+
+  restart)
+    docker-compose stop && docker-compose rm -f && docker-compose up -d --build
+    ;;
+
+  status)
+    docker-compose ps ${extra_params}
+    ;;
+
+  logs)
+    docker-compose logs --tail=100 ${extra_params}
+    ;;
+
+  down)
+    docker-compose down ${extra_params}
+    ;;
+
+  enter)
+	if [ -n "${extra_params}" ]; then
+		docker-compose run --rm ${extra_params}
+	else
+		die "Please ${CYAN}specify which service${NOFORMAT} to run, e.g.: ${ORANGE}$(basename "${BASH_SOURCE[0]}") ${initial_commandline} ${YELLOW}apache${NOFORMAT}"
+	fi    
+    ;;
+
+  sh)
+	if [ -n "${extra_params}" ]; then
+		docker-compose run --rm ${extra_params} sh
+	else
+		die "Please ${CYAN}specify which service${NOFORMAT} to run, e.g.: ${ORANGE}$(basename "${BASH_SOURCE[0]}") ${initial_commandline} ${YELLOW}apache${NOFORMAT}"
+	fi   
+    ;;
+	
+  bash)
+	if [ -n "${extra_params}" ]; then
+		docker-compose run --rm ${extra_params} bash
+	else
+		die "Please ${CYAN}specify which service${NOFORMAT} to run, e.g.: ${ORANGE}$(basename "${BASH_SOURCE[0]}") ${initial_commandline} ${YELLOW}apache${NOFORMAT}"
+	fi   
+    ;;
+	
+  update)
+	if [ -n "${extra_params}" ]; then
+		all=($extra_params)
+		for i in "${all[@]}" ; do
+			docker-compose build --no-cache --pull $i
+		done
+	fi	
+	docker-compose pull
+	docker-compose up -d
+    ;;
+	
+  env)
+	if [ -f .env ]; then
+		if [ "${extra_params[0]}" = "edit" ]; then
+			${file_editor} .env
+		else
+			cat .env
+		fi	
+	else
+		die "${RED}ERROR${NOFORMAT}:${ORANGE}$(pwd)/.env${NOFORMAT} does not exist."
+	fi
+    ;;
+
+  mysql)
+    die "${CYAN}Not implemented yet${NOFORMAT}"
+    ;;
+
+
+	
+
+
+  *)
+    die "${RED}Unknown command:${NOFORMAT} $1"
+    ;;
+esac
