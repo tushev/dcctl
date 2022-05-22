@@ -1,14 +1,39 @@
 # dcctl
-A handy tool that simplifies management of `docker-compose` projects.
+A handy tool that simplifies management of `docker-compose` applications on Linux systems.
+
+ℹ (Version 0001): **README is a work in progress.** `dcctl` **itself is functional, except for** `dcctl mysql` **command** (not implemented yet)
 
 ## Concepts
 
-- "Service" - an application, defined by `docker-compose.yml` (and optionally `.env`) file, located in a separate directory
-- (v. 0.1) Each service is located in `/docker` subdir in user's home directory, i.e.: `/home/wordpress/docker`
+- "Service" - an application, defined by `docker-compose.yml` (and optionally `.env`) file + extra files
+- Each service is located in a separate directory
+- Most likely the service is located in `/docker` subdir in user's home directory, i.e.: `/home/wordpress/docker` (it is expected that each service has its own unix user; not mandatory)
+- Services may also be located in other directories. Version 0001 requires to specify full path to dir in this case.
+- If there's no service specfied, `dcctl` looks for `docker-compose.yml` in current directory
+- `.env` is expected to contain `COMPOSE_PROJECT_NAME` variable (not mandatory)
+- Service is "started" by `docker-compose up -d --build` command
+- Service is "stopped" by `docker-compose stop && docker-compose rm -f` command
 
 ## Usage
 
-- `dcctl start` Starts 
+- `dcctl start` Starts service defined by `docker-compose.yml` in current directory
+- `dcctl start wordpress` Starts service defined by `/home/wordpress/docker/docker-compose.yml`
+- `dcctl start /data/docker.d/wordpress/dc` Starts service defined by `/data/docker.d/wordpress/dc/docker-compose.yml`
+- `dcctl stop wordpress` Stops Wordpress service
+- `dcctl restart wordpress` Restarts Wordpress service<br>(equals to `docker-compose stop && docker-compose rm -f && docker-compose up -d --build`)
+- `dcctl update wordpress apache-custom redis-custom` Equals to: <br>
+```
+	cd /home/wordpress/docker/
+	docker-compose build --no-cache --pull apache-custom
+	docker-compose build --no-cache --pull redis-custom
+	docker-compose pull
+	docker-compose up -d
+```
+- `dcctl bash wordpress php-fpm` Equals to `docker-compose run --rm php-fpm bash`
+- `dcctl env wordpress` Shows `/home/wordpress/docker/.env`
+- `dcctl list` Equals to `docker ps --format "much_better_formatted"`
+
+ℹ This list is incomplete. Please read the following section for more info.
 
 ## dcctl -h
 ```
