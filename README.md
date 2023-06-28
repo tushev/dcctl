@@ -15,27 +15,27 @@ A handy tool that simplifies management of `docker-compose` applications on Linu
 - Service is "stopped" by `docker-compose stop && docker-compose rm -f` command
 
 This is example directory structure. It has three services (aka docker-compose projects): `cloud`, `wordpress` and `pihole`. The first two reside in `/home` (and have their corresponding unix users).
-```
+<pre>
 /home
-├── cloud
-│   ├── db
-│   ├── data
-│   ├── docker
-│   │   ├── .env
-│   │   └── docker-compose.yml
-│   └── nextcloud-www
-└── wordpress
-    ├── db
-    ├── docker
-    │   ├── .env
-    │   └── docker-compose.yml
-    └── www
+├── <b>cloud</b>
+│   ├── <i>db</i>
+│   ├── <i>data</i>
+│   ├── <b>docker</b>
+│   │   ├── <b>.env</b>
+│   │   └── <b>docker-compose.yml</b>
+│   └── <i>nextcloud-www</i>
+└── <b>wordpress</b>
+    ├── <i>db</i>
+    ├── <b>docker</b>
+    │   ├── <b>.env</b>
+    │   └── <b>docker-compose.yml</b>
+    └── <i>www</i>
 
-/data/docker.d/pihole
-    ├── etc
-    └── dc
-        └── docker-compose.yml
-```
+/data/docker.d/<b>pihole</b>
+    ├── <i>etc</i>
+    └── <b><u>dc</u></b>
+        └── <b>docker-compose.yml</b>
+</pre>
 
 ## Installation
 ```sh
