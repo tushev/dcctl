@@ -14,7 +14,8 @@ A handy tool that simplifies management of `docker-compose` applications on Linu
 - Service is "started" by `docker-compose up -d --build` command
 - Service is "stopped" by `docker-compose stop && docker-compose rm -f` command
 
-This is example directory structure. It has three services (aka docker-compose projects): `cloud`, `wordpress` and `pihole`. The first two reside in `/home` (and have their corresponding unix users).
+#### Example directory structure
+In this example we have three services (aka docker-compose projects): `cloud`, `wordpress` and `pihole`. The first two reside in `/home` (and have their corresponding unix users).
 <pre>
 /home
 ├── <b>cloud</b>
