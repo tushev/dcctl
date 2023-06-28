@@ -14,6 +14,29 @@ A handy tool that simplifies management of `docker-compose` applications on Linu
 - Service is "started" by `docker-compose up -d --build` command
 - Service is "stopped" by `docker-compose stop && docker-compose rm -f` command
 
+This is example directory structure. It has three services (aka docker-compose projects): `cloud`, `wordpress` and `pihole`. The first two reside in `/home` (and have their corresponding unix users).
+```
+/home
+├── cloud
+│   ├── db
+│   ├── data
+│   ├── docker
+│   │   ├── .env
+│   │   └── docker-compose.yml
+│   └── nextcloud-www
+└── wordpress
+    ├── db
+    ├── docker
+    │   ├── .env
+    │   └── docker-compose.yml
+    └── www
+
+/data/docker.d/pihole
+    ├── etc
+    └── dc
+        └── docker-compose.yml
+```
+
 ## Installation
 ```sh
 curl -o /usr/local/bin/dcctl https://raw.githubusercontent.com/tushev/dcctl/main/dcctl && chmod +x /usr/local/bin/dcctl
@@ -33,7 +56,7 @@ SOFTWARE.
 
 - `dcctl start` Starts service defined by `docker-compose.yml` in current directory
 - `dcctl start wordpress` Starts service defined by `/home/wordpress/docker/docker-compose.yml`
-- `dcctl start /data/docker.d/wordpress/dc` Starts service defined by `/data/docker.d/wordpress/dc/docker-compose.yml`
+- `dcctl start /data/docker.d/pihole/dc` Starts service defined by `/data/docker.d/pihole/dc/docker-compose.yml`
 - `dcctl stop wordpress` Stops Wordpress service
 - `dcctl restart wordpress` Restarts Wordpress service<br>(equals to `docker-compose stop && docker-compose rm -f && docker-compose up -d --build`)
 - `dcctl update wordpress apache-custom redis-custom` Equals to: <br>
